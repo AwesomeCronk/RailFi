@@ -1,15 +1,37 @@
+# Bootstrap RailFi to run on a locomotive (uPython device) or on a PC (CPython on Linux or Windows)
+import sys
+
+print('RailFi Locomotive firmware booting...')
+
+if sys.implementation.name == 'micropython':
+    print('Boot mode: real')
+
+    from machine import Pin
+    import network
+    import usocket as socket
+    import gc
+    
+    gc.collect()
+
+    # Hardware connections
+    headLight = Pin(32, Pin.OUT)
+    rearLight = Pin(33, Pin.OUT)
+    lights = {'headlight': headLight, 'rearlight': rearLight}
+
+    def setLight(light, value):
+        lights[light].value(value)
+
+    def getLight(light):
+        return lights[light].value()
+
+elif sys.implementation.name == 'cpython':
+    print('Boot mode: emulator')
+
+else:
+    raise RuntimeError('Implementation "{}" not recognized'.format(sys.implementation.name))
+
 import time
-from machine import Pin
-import network
-import usocket as socket
-import gc
 
-# Garbage collection
-gc.collect()
-
-# Hardware connections
-headLight = Pin(32, Pin.OUT)
-rearLight = Pin(33, Pin.OUT)
 
 # Error handling
 # NO_ERROR is a placeholder to ensure that <code number> >= 1
@@ -31,18 +53,23 @@ def raiseError(code):
         codeName = code
         codeNum = errorCodes.index(code)
 
+    print('ERROR {}: {}'.format(codeNum, codeName))
+
+    setLight('headlight', 0)
+    setLight('rearlight', 0)
+
     while True:
         # Two quick blinks to indicate errors
         for i in range(4):
-            headLight.value(1 - headLight.value())
-            rearLight.value(1 - rearLight.value())
+            setLight('headlight', 1 - getLight('headlight'))
+            setLight('rearlight', 1 - getLight('rearlight'))
             time.sleep_ms(125)
 
         # Blink <codeNum> times
         for i in range(codeNum * 2):
             time.sleep_ms(500)
-            headLight.value(1 - headLight.value())
-            rearLight.value(1 - rearLight.value())
+            setLight('headlight', 1 - getLight('headlight'))
+            setLight('rearlight', 1 - getLight('rearlight'))
 
         time.sleep(1)
 
