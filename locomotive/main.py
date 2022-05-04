@@ -50,13 +50,19 @@ if bootMode == 'real':
         return lights[light].value()
 
     
+    ap = None
     def startAP(apName):
+        global ap
         ap = network.WLAN(network.AP_IF)
         ap.config(essid=apName)
         ap.config(max_clients=5)
         # ap.ifconfig(('192.168.100.100', '255.255.255.0', '192.168.100.100', '0.0.0.0'))
         ap.active(True)
         return ap.config('essid'), ap.ifconfig()[0]
+
+    def stopAP():
+        ap.active(False)
+        # del ap  # Saves RAM, may/may not be an issue
 
 elif bootMode == 'emulator':
     print('Boot mode: emulator')
@@ -72,7 +78,8 @@ elif bootMode == 'emulator':
         global lights
         assert light in lights.keys()
         lights[light] = value
-        print('Light "{}" set to {}'.format(light, value))
+        # print('Light "{}" set to {}'.format(light, value))
+        displayHardware()
 
     def getLight(light):
         return lights[light]
@@ -81,6 +88,9 @@ elif bootMode == 'emulator':
     def startAP(apName):
         print('Pretending to start access point "{}"'.format(apName))
         return '<wifi>', '<ip address>'
+
+    def stopAP():
+        print('Pretending to stop access point')
 
 
     # Hardware display
@@ -156,21 +166,14 @@ def getConfig(configPath='config.txt'):
 
 
 ## Controller connection ##
-
-# Transmit 0xdeadbeef to indicate bad data
-def breakup():
-    conn.send(b'\xde\xad\xbe\xef')
-    conn.close()
-    return False, ()
-
-def discoverController(config):
+def discoverController():
     # Host network RailFi_<loco name>_<loco number>
     apName = 'RailFi_' + config['roadacronym'] + '_' + config['loconumber']
     port = 2000
     ssid, locoIP = startAP(apName)
     print('\nAP Info:\nSSID: {}\nLoco IP: {}\nLoco Handshake Port: {}'.format(ssid, locoIP, port))
 
-    # Host on port 100 to get controller info
+    # Serve a socket for controllers to connect to
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(('', port))
     sock.listen(5)
@@ -181,42 +184,53 @@ def discoverController(config):
         conn, addr = sock.accept()
         # conn.settimeout(0.25)     # Uncomment if a timeout proves necessary
         print('Controller connected.')
-        haveController, controllerInfo = handshake(conn)
 
-# Handshake with controller
-def handshake(conn):
+        print('Performing handshake.')
 
-    print('Performing handshake.')
+        # First contact: Controller sends 0xffff, Locomotive responds 0xffff
+        firstContact = conn.recv(2)
+        if firstContact != b'\xff\xff':
+            print('First contact incorrect.')
+            haveController = False
+            conn.send(b'\xde\xad\xbe\xef')
+            conn.close()
+            continue
+        conn.send(b'\xff\xff')
+        print('First contact correct.')
 
-    # First contact: Controller sends 0xffff, Locomotive responds 0xffff
-    firstContact = conn.recv(2)
-    if firstContact != b'\xff\xff':
-        print('First contact incorrect.')
-        return breakup()
-    conn.send(b'\xff\xff')
-    print('First contact correct.')
+        # Get password
+        try:
+            password = conn.recv(8).decode('UTF-8')
+        except UnicodeError:
+            print('Bad password data')
+            haveController = False
+            conn.send(b'\xde\xad\xbe\xef')
+            conn.close()
+            continue
+            
+        # Test password
+        if password != config['password']:
+            print('Password incorrect.')
+            haveController = False
+            conn.send(b'\xde\xad\xbe\xef')
+            conn.close()
+            continue
+        conn.send(b'\xff')
+        print('Password correct.')
 
-    # Get password
-    try:
-        password = conn.recv(8).decode('UTF-8')
-    except UnicodeError:
-        print('Bad password data')
-        return breakup()
-        
-    # Test password
-    if password != config['password']:
-        print('Password incorrect.')
-        return breakup()
-    conn.send(b'\xff')
-    print('Password correct.')
+        # Get AP info (ssid, password) and API info (addr, port)
+        ssid = conn.recv(32).decode('utf-8')
+        password = conn.recv(16).decode('utf-8')
+        addr = conn.recv(16).decode('utf-8')
+        port = int.from_bytes(conn.recv(2), 'big')
+        conn.close()
+        stopAP()
+        haveController = True
+        return (ssid, password, addr, port)
 
-    # Get AP info (ssid, password) and API info (addr, port)
-    ssid = conn.recv(32)
-    # return True, (ssid, password, addr, port)
-    return False, ()
-
-## Join control network
+def connectController():
+    pass
 
 if __name__ == '__main__':
     getConfig()
-    discoverController(config)
+    print(discoverController())
