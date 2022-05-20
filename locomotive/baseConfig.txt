@@ -1,6 +1,6 @@
-roadname : RailFi
-roadacronym : RF
-loconumber : 0000
-locomodel : no model specified
+road-name : RailFi
+road-acronym : RF
+loco-number : 0000
+loco-model : no model specified
 password : 12345678
-modelmanufacturer : AwesomeCronk
+model-manufacturer : AwesomeCronk

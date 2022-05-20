@@ -12,6 +12,7 @@ class loco():
         self.name = name
         self.socket = socket
 
+# Thread to manage incoming connections on the traffic socket (There should only ever be *ONE* instance of this running at a time!)
 class trafficCop(QThread):
     newConnection = pyqtSignal(tuple)
 
@@ -27,7 +28,7 @@ class trafficCop(QThread):
                 self.newConnection.emit((conn, addr))
                 conn.close()
             except socket.timeout:
-                print('traffic socket timeout while waiting for connection')
+                pass
         self.finished.emit()
 
 class mainWindow(QWidget):

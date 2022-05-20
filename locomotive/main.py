@@ -1,6 +1,6 @@
 import sys, time
 
-print('RailFi Locomotive firmware booting...')
+print('RailFi locomotive firmware booting...')
 
 # Bootstrap RailFi to run on a locomotive (uPython device) or on a PC (CPython on Linux or Windows)
 
@@ -11,14 +11,14 @@ errorCodes = [
     'CONFIG_BAD_SYNTAX',
     'CONFIG_MISSING_ENTRY'
 ]
-activeError = 0
+currentError = 0
 configRequiredEntries = [
-    'roadname',
-    'roadacronym',
-    'loconumber',
-    'locomodel',
+    'road-name',
+    'road-acronym',
+    'loco-number',
+    'loco-model',
     'password',
-    'modelmanufacturer'
+    'model-manufacturer'
 ]
 config = {}
 throttle = 0
@@ -50,7 +50,8 @@ if bootMode == 'real':
         return lights[light].value()
 
     
-    ap = None
+    ap = None   # DO NOT reference outside of platform abstraction functions!!!
+    
     def startAP(apName):
         global ap
         ap = network.WLAN(network.AP_IF)
@@ -62,7 +63,28 @@ if bootMode == 'real':
 
     def stopAP():
         ap.active(False)
-        # del ap  # Saves RAM, may/may not be an issue
+        del ap
+        gc.collect()
+
+    sta = None  # DO NOT reference outside of platform abstraction functions!!!
+    
+    def startSTA(ssid, password):
+        global sta
+        sta = network.WLAN(network.STA_IF)
+        sta.active(True)
+        sta.scan()
+        sta.connect(ssid, password)
+        for i in range(5):
+            if sta.isconnected():
+                break
+            print('Waiting for STA to connect...')
+            time.sleep(0.5)
+        print(sta.ifconfig())
+
+    def stopSTA():
+        sta.active(False)
+        del sta
+        gc.collect()
 
 elif bootMode == 'emulator':
     print('Boot mode: emulator')
@@ -95,7 +117,7 @@ elif bootMode == 'emulator':
 
     # Hardware display
     def displayHardware():
-        print('Lights: {} {} | Motor: {}% | Error: {}'.format('H' if lights['headlight'] else ' ', 'R' if lights['rearlight'] else ' ', throttle, errorCodes[activeError]))
+        print('Lights: {} {} | Motor: {}% | Error: {}'.format('H' if lights['headlight'] else ' ', 'R' if lights['rearlight'] else ' ', throttle, errorCodes[currentError]))
 
 else:
     raise RuntimeError('Implementation "{}" not recognized'.format(sys.implementation.name))
@@ -103,8 +125,8 @@ else:
 
 ## Error handling ##
 def raiseError(code):
-    global activeError
-    if code == 0 or code == 'NO_CODE':
+    global currentError
+    if code == 0 or code == 'NO_ERROR':
         return
     
     if isinstance(code, int):
@@ -114,22 +136,23 @@ def raiseError(code):
         codeName = code
         codeNum = errorCodes.index(code)
 
-    activeError = code
+    currentError = codeNum
     print('ERROR {}: {}'.format(codeNum, codeName))
 
     setLight('headlight', 0)
     setLight('rearlight', 0)
+    sleep(0.5)
 
     while True:
         # Two quick blinks to indicate errors
         for i in range(4):
             setLight('headlight', 1 - getLight('headlight'))
             setLight('rearlight', 1 - getLight('rearlight'))
-            sleep(0.125)
+            sleep(0.1)
 
         # Blink <codeNum> times
         for i in range(codeNum * 2):
-            sleep(0.500)
+            sleep(0.4)
             setLight('headlight', 1 - getLight('headlight'))
             setLight('rearlight', 1 - getLight('rearlight'))
 
@@ -167,17 +190,21 @@ def getConfig(configPath='config.txt'):
 
 ## Controller connection ##
 def discoverController():
+    print('\n===== Discovery mode =====')
     # Host network RailFi_<loco name>_<loco number>
-    apName = 'RailFi_' + config['roadacronym'] + '_' + config['loconumber']
+    apName = 'RailFi_Discover_' + config['road-acronym'] + '_' + config['loco-number']
     port = 2000
     ssid, locoIP = startAP(apName)
-    print('\nAP Info:\nSSID: {}\nLoco IP: {}\nLoco Handshake Port: {}'.format(ssid, locoIP, port))
+    print('AP Info:\nSSID: {}\nLoco IP: {}\nLoco Handshake Port: {}'.format(ssid, locoIP, port))
 
     # Serve a socket for controllers to connect to
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(('', port))
     sock.listen(5)
     print('Socket bound')
+
+    # if bootMode == 'real':
+    #     print(gc.mem_free())
 
     haveController = False
     while not haveController:
@@ -200,7 +227,7 @@ def discoverController():
 
         # Get password
         try:
-            password = conn.recv(8).decode('UTF-8')
+            password = conn.recv(16).decode('UTF-8')
         except UnicodeError:
             print('Bad password data')
             haveController = False
@@ -215,7 +242,7 @@ def discoverController():
             conn.send(b'\xde\xad\xbe\xef')
             conn.close()
             continue
-        conn.send(b'\xff')
+        conn.send(b'\xff\xff')
         print('Password correct.')
 
         # Get AP info (ssid, password) and API info (addr, port)
@@ -223,14 +250,17 @@ def discoverController():
         password = conn.recv(16).decode('utf-8')
         addr = conn.recv(16).decode('utf-8')
         port = int.from_bytes(conn.recv(2), 'big')
+        conn.send(b'\xff\xff')
         conn.close()
         stopAP()
         haveController = True
         return (ssid, password, addr, port)
 
-def connectController():
-    pass
+def connectController(ssid, password, addr, port):
+    startSTA(ssid, password)
+    
 
 if __name__ == '__main__':
+    sleep(1)
     getConfig()
     print(discoverController())
