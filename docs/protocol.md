@@ -31,9 +31,7 @@ If a locomotive already has a contact for a controller, it will try to connect t
 * C: TX `<controller-dedicated-port (big-endian raw) (2 bytes)>`
 * L: TX `0x0000`
 * L: Disconnect socket
-* L: Connect to `<controller-addr>`/`<controller-dedicated-port>`
-* C: TX `0xff00`
-* L: TX `0xff00`
+* L: Connect to `<controller-addr>` on port `<controller-dedicated-port>`
 
 If at any point, the controller transmits incorrect data, the locomotive will transmit `0xdeadbeef` (raw bytes, not a string) and close the connection. It will then go into discovery mode. Once this sequence is complete, the controller and locomotive will begin sending packets to each other.
 

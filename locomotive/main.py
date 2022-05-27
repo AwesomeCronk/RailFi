@@ -23,6 +23,8 @@ configRequiredEntries = [
 config = {}
 throttle = 0
 
+
+## Emulation handling ##
 bootMode = 'real' if sys.implementation.name == 'micropython' else 'emulator' if sys.implementation.name == 'cpython' else 'unknown'
 
 if bootMode == 'real':
@@ -114,6 +116,12 @@ elif bootMode == 'emulator':
     def stopAP():
         print('Pretending to stop access point')
 
+    def startSTA(ssid, password):
+        print('Pretending to start station and connect to {}'.format(ssid))
+
+    def stopSTA():
+        print('Pretending to stop station')
+
 
     # Hardware display
     def displayHardware():
@@ -158,6 +166,7 @@ def raiseError(code):
 
         sleep(1)
 
+
 ## Config loading ##
 def getConfig(configPath='config.txt'):
     global config
@@ -183,14 +192,12 @@ def getConfig(configPath='config.txt'):
         if not key in config.keys():
             raiseError('CONFIG_MISSING_ENTRY')
 
-    # Dump the config over UART
-    # for key in config.keys():
-    #     print('"{}" : "{}"'.format(key, config[key]))
-
 
 ## Controller connection ##
+controllerSocket = None
+
 def discoverController():
-    print('\n===== Discovery mode =====')
+    print('Entering discovery mode')
     # Host network RailFi_<loco name>_<loco number>
     apName = 'RailFi_Discover_' + config['road-acronym'] + '_' + config['loco-number']
     port = 2000
@@ -208,22 +215,21 @@ def discoverController():
 
     haveController = False
     while not haveController:
+        print('Waiting for connection...')
         conn, addr = sock.accept()
         # conn.settimeout(0.25)     # Uncomment if a timeout proves necessary
-        print('Controller connected.')
-
-        print('Performing handshake.')
+        print('Controller connected for discovery')
 
         # First contact: Controller sends 0xffff, Locomotive responds 0xffff
         firstContact = conn.recv(2)
         if firstContact != b'\xff\xff':
-            print('First contact incorrect.')
+            print('First contact incorrect')
             haveController = False
             conn.send(b'\xde\xad\xbe\xef')
             conn.close()
             continue
         conn.send(b'\xff\xff')
-        print('First contact correct.')
+        print('First contact correct')
 
         # Get password
         try:
@@ -237,13 +243,13 @@ def discoverController():
             
         # Test password
         if password != config['password']:
-            print('Password incorrect.')
+            print('Password incorrect')
             haveController = False
             conn.send(b'\xde\xad\xbe\xef')
             conn.close()
             continue
         conn.send(b'\xff\xff')
-        print('Password correct.')
+        print('Password correct')
 
         # Get AP info (ssid, password) and API info (addr, port)
         ssid = conn.recv(32).decode('utf-8')
@@ -254,13 +260,40 @@ def discoverController():
         conn.close()
         stopAP()
         haveController = True
+        print('Discovery complete, controller info obtained')
         return (ssid, password, addr, port)
 
-def connectController(ssid, password, addr, port):
+def connectController(ssid, password, addr, trafficPort):  # Establish a connection to the controller and globalize the socket, return bool of success
+    global controllerSocket
     startSTA(ssid, password)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(addr, trafficPort)
+
+    if sock.recv(2) != b'\x00\x00':
+        sock.send(b'\xde\xad\xbe\xef')
+        sock.close()
+        return False
+    sock.sendall(b'\x00\x00')
+
+    dedicatedPort = int.from_bytes(sock.recv(2), 'big')
+    sock.sendall(b'\x00\x00')
+
+    sock.close()
+    sock.connect(addr, dedicatedPort)
+    controllerSocket = sock
+    return True
     
 
+## Main section ##
 if __name__ == '__main__':
     sleep(1)
     getConfig()
-    print(discoverController())
+    connected = False
+    if 'controller-ssid' in config.keys() and 'controller-ssid-password' in config.keys() and 'controller-addr' in config.keys() and 'controller-traffic-port' in config.keys():
+        print('Credentials for controller found in config, connecting...')
+        connected = connectController(config['controller-ssid'], config['controller-ssid-password'], config['controller-addr'], int(config['controller-traffic-port']))
+    while not connected:
+        print('Unable to connect to controller')
+        controllerInfo = discoverController()
+        connected = connectController(*controllerInfo)
+    print('Connected to controller, ready to send/recv packets')
