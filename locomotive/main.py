@@ -1,6 +1,6 @@
 import sys, time
 
-print('RailFi locomotive firmware booting...')
+print('RailFi locomotive firmware booting')
 
 # Bootstrap RailFi to run on a locomotive (uPython device) or on a PC (CPython on Linux or Windows)
 
@@ -197,7 +197,7 @@ def getConfig(configPath='config.txt'):
 controllerSocket = None
 
 def discoverController():
-    print('Entering discovery mode')
+    print('===== Entering discovery mode =====')
     # Host network RailFi_<loco name>_<loco number>
     apName = 'RailFi_Discover_' + config['road-acronym'] + '_' + config['loco-number']
     port = 2000
@@ -265,22 +265,43 @@ def discoverController():
 
 def connectController(ssid, password, addr, trafficPort):  # Establish a connection to the controller and globalize the socket, return bool of success
     global controllerSocket
+
+    print('===== Connecting to controller "{}" on access point "{}" ====='.format(addr, ssid))
     startSTA(ssid, password)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect(addr, trafficPort)
+    trafficSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    if sock.recv(2) != b'\x00\x00':
-        sock.send(b'\xde\xad\xbe\xef')
-        sock.close()
+    trafficSocket.settimeout(1.0)
+    for i in range(5):
+        try:
+            trafficSocket.connect((addr, trafficPort))
+            break
+        except socket.timeout:
+            print('Connection timed out')
+            if i == 4:
+                print('Connection timed out too many times')
+                return False
+    print('Connected to traffic cop')
+
+    if trafficSocket.recv(2) != b'\x00\x00':
+        trafficSocket.send(b'\xde\xad\xbe\xef')
+        trafficSocket.close()
+        print('First contact incorrect')
         return False
-    sock.sendall(b'\x00\x00')
+    trafficSocket.sendall(b'\x00\x00')
+    print('Completed first contact')
 
-    dedicatedPort = int.from_bytes(sock.recv(2), 'big')
-    sock.sendall(b'\x00\x00')
+    dedicatedPort = int.from_bytes(trafficSocket.recv(2), 'big')
+    trafficSocket.sendall(b'\x00\x00')
+    print('Directed to port {}'.format(dedicatedPort))
 
-    sock.close()
-    sock.connect(addr, dedicatedPort)
-    controllerSocket = sock
+    trafficSocket.close()
+    print('Disconnected from traffic cop')
+
+    controllerSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    print('Pausing to let controller initialize dedicated socket')
+    sleep(0.5)
+    controllerSocket.connect((addr, dedicatedPort))
+    print('Connected to controller')
     return True
     
 
@@ -296,4 +317,4 @@ if __name__ == '__main__':
         print('Unable to connect to controller')
         controllerInfo = discoverController()
         connected = connectController(*controllerInfo)
-    print('Connected to controller, ready to send/recv packets')
+    print('===== Connected to controller, ready to send/recv packets =====')
