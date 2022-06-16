@@ -43,7 +43,7 @@ if bootMode == 'real':
     # Hardware connections
     headLight = Pin(32, Pin.OUT)
     rearLight = Pin(33, Pin.OUT)
-    lights = {'headlight': headLight, 'rearlight': rearLight}
+    lights = [headLight, rearLight]
 
     def setLight(light, value):
         lights[light].value(value)
@@ -96,11 +96,10 @@ elif bootMode == 'emulator':
     sleep = time.sleep
 
     # Virtual hardware connections
-    lights = {'headlight': 0, 'rearlight': 0}
+    lights = [0, 0]
 
     def setLight(light, value):
         global lights
-        assert light in lights.keys()
         lights[light] = value
         # print('Light "{}" set to {}'.format(light, value))
         displayHardware()
@@ -125,7 +124,7 @@ elif bootMode == 'emulator':
 
     # Hardware display
     def displayHardware():
-        print('Lights: {} {} | Motor: {}% | Error: {}'.format('H' if lights['headlight'] else ' ', 'R' if lights['rearlight'] else ' ', throttle, errorCodes[currentError]))
+        print('Lights: {} {} | Motor: {}% | Error: {}'.format('H' if lights[0] else ' ', 'R' if lights[1] else ' ', throttle, errorCodes[currentError]))
 
 else:
     raise RuntimeError('Implementation "{}" not recognized'.format(sys.implementation.name))
@@ -306,6 +305,100 @@ def connectController(ssid, password, addr, trafficPort):  # Establish a connect
     
 
 ## Main section ##
+packetTypes = [
+    'SET_THROTTLE',
+    'GET_THROTTLE',
+    'SET_LIGHT',
+    'GET_LIGHT',
+    'E_STOP',
+    'ACK',
+    'END_CONVERSATION',
+    'ERROR'
+]
+
+activeConversations = []
+inBuffer = b''
+
+def genPacket(packetType, conversationID, payload):
+    print('Generating packet')        
+    binary = b'RF-'
+    
+    # Get packet type as int
+    if isinstance(packetType, str):
+        if packetType in packetTypes: packetType = packetTypes.index(packetType)
+        else: raise ValueError('Invalid packet type "{}"'.format(packetType))
+    elif isinstance(packetType, int): pass
+    else: raise ValueError('Invalid packet type "{}"'.format(packetType))
+
+    # Generate a new conversation ID
+    if conversationID == -1: conversationID = activeConversations[-1] + 2 if 0 < len(activeConversations) < 2 ** 31 else 0
+    if not conversationID in activeConversations: activeConversations.append(conversationID)
+
+    binary += int.to_bytes(packetType, 1, 'big')
+    binary += int.to_bytes(conversationID, 4, 'big')
+    if len(payload) >= 2 ** 16: raise ValueError('Payload too long')
+    binary += int.to_bytes(len(payload), 2, 'big')
+    binary += payload
+
+    print('Packet generation results:', binary)
+    return binary
+
+def send(data):
+        controllerSocket.sendall(data)
+
+def recv(maxPackets=-1, clearConversations=True):
+    global inBuffer
+    inBuffer += controllerSocket.recv(4096)
+    packets = []
+    while len(inBuffer):
+        print('Decoding packet from buffer')
+        if len(inBuffer) < 10:
+            print('Not enough data in buffer')
+            print(inBuffer)
+            break
+        prefix = inBuffer[0:3]
+        packetType = int.from_bytes(inBuffer[3:4], 'big')
+        conversationID = int.from_bytes(inBuffer[4:8], 'big')
+        payloadSize = int.from_bytes(inBuffer[8:10], 'big')
+        # print('prefix:', prefix)
+        print('packetType:', packetTypes[packetType])
+        print('conversationID:', conversationID)
+        print('payloadSize:', payloadSize)
+        
+        if len(inBuffer) < payloadSize + 10:
+            print('Packet incomplete, waiting to receive more data in buffer')
+            return packets
+
+        payload = inBuffer[10:payloadSize + 10]
+        # print(payload)
+
+        inBuffer = inBuffer[payloadSize + 10:]
+        if clearConversations and packetTypes[packetType] == 'END_CONVERSATION': activeConversations.remove(conversationID); print('Conversation {} ended'.format(conversationID)); continue
+        packets.append((packetType, conversationID, payload))
+    return packets
+
+def main():
+    print('===== Beginning main operation =====')
+    # Initialization
+
+    # Operation
+    while True:
+        packets = recv()
+        for packet in packets:
+            packetType, conversationID, payload = packet
+
+            if packetTypes[packetType] == 'SET_LIGHT':
+                setLight(payload[0], payload[1])
+                print('Set light {} to {}'.format(payload[0], payload[1]))
+                send(genPacket('END_CONVERSATION', conversationID, b''))
+
+            elif packetTypes[packetType] == 'GET_LIGHT':
+                value = getLight(payload[0])
+                send(genPacket('ACK', conversationID, int.to_bytes(value, 1, 'big')))
+                send(genPacket('END_CONVERSATION', conversationID, b''))
+
+        sleep(0.01)
+
 if __name__ == '__main__':
     sleep(1)
     getConfig()
@@ -317,4 +410,5 @@ if __name__ == '__main__':
         print('Unable to connect to controller')
         controllerInfo = discoverController()
         connected = connectController(*controllerInfo)
-    print('===== Connected to controller, ready to send/recv packets =====')
+    print('Connected to controller, ready to send/recv packets')
+    main()

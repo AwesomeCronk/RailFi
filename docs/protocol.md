@@ -36,15 +36,16 @@ If a locomotive already has a contact for a controller, it will try to connect t
 If at any point, the controller transmits incorrect data, the locomotive will transmit `0xdeadbeef` (raw bytes, not a string) and close the connection. It will then go into discovery mode. Once this sequence is complete, the controller and locomotive will begin sending packets to each other.
 
 ## Packets
-Packets are structured in a message-response manner. Each packet carries a conversation ID, generated such that each one is unique, even if one side generates packets without being aware of previous packets. Each side keeps track of the number of conversations it has initiated. Both sides multiply that number by 2, then the locomotive adds 1 to it to create the conversaton ID. When the conversation counter rolls over to `2 ** 31`, it will wrap back to zero before the next packet is transmitted to prevent integer overflow from causing errors.
+Packets are structured in a message-response manner. Each packet carries a conversation ID, generated such that each one is unique, even if one side generates packets without being aware of previous packets. Each side keeps track of the number of conversations it has initiated and are still active. Both sides multiply that number by 2, then the locomotive adds 1 to it to create the conversaton ID. If the conversation counter rolls over to `2 ** 31`, then no new conversations may be started. Conversations can be ended by transmitting an end packet.
 
 ### Packet structure
 * 3B: `RF-` (utf-8)
 * 1B: `<packet-type>` (int8)
 * 4B: `<conversation-ID>` (int32)
 * 2B: `<payload-size>` (int16)
+* <payload-size>B: `<payload>` (raw)
 
-Packets may carry a payload of 65535 bytes or less. No error checking or hashes are included. All integers are big-endian.
+Packets may carry a payload of 65535 bytes or less. No error checking or hashes are included. All integers are big-endian. A payload is not strictly necessary.
 
 ## Control API
 This section under construction
