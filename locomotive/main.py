@@ -30,11 +30,12 @@ bootMode = 'real' if sys.implementation.name == 'micropython' else 'emulator' if
 if bootMode == 'real':
     print('Boot mode: real')
 
-    from machine import Pin
+    from machine import Pin, freq
     import network
     import usocket as socket
     import gc
     
+    freq(240000000)
     gc.collect()
 
     def sleep(t):
@@ -274,7 +275,7 @@ def connectController(ssid, password, addr, trafficPort):  # Establish a connect
         try:
             trafficSocket.connect((addr, trafficPort))
             break
-        except socket.timeout:
+        except OSError:
             print('Connection timed out')
             if i == 4:
                 print('Connection timed out too many times')
@@ -344,7 +345,8 @@ def genPacket(packetType, conversationID, payload):
     return binary
 
 def send(data):
-        controllerSocket.sendall(data)
+    print('Sending packet data')
+    controllerSocket.sendall(data)
 
 def recv(maxPackets=-1, clearConversations=True):
     global inBuffer
@@ -361,9 +363,9 @@ def recv(maxPackets=-1, clearConversations=True):
         conversationID = int.from_bytes(inBuffer[4:8], 'big')
         payloadSize = int.from_bytes(inBuffer[8:10], 'big')
         # print('prefix:', prefix)
-        print('packetType:', packetTypes[packetType])
-        print('conversationID:', conversationID)
-        print('payloadSize:', payloadSize)
+        # print('packetType:', packetTypes[packetType])
+        # print('conversationID:', conversationID)
+        # print('payloadSize:', payloadSize)
         
         if len(inBuffer) < payloadSize + 10:
             print('Packet incomplete, waiting to receive more data in buffer')
@@ -373,8 +375,8 @@ def recv(maxPackets=-1, clearConversations=True):
         # print(payload)
 
         inBuffer = inBuffer[payloadSize + 10:]
-        if clearConversations and packetTypes[packetType] == 'END_CONVERSATION': activeConversations.remove(conversationID); print('Conversation {} ended'.format(conversationID)); continue
-        packets.append((packetType, conversationID, payload))
+        if clearConversations and packetTypes[packetType] == 'END_CONVERSATION': activeConversations.remove(conversationID); print('Conversation {} ended'.format(conversationID))
+        else: packets.append((packetType, conversationID, payload))
     return packets
 
 def main():
@@ -385,17 +387,27 @@ def main():
     while True:
         packets = recv()
         for packet in packets:
+            print('===== Processing command packet =====')
             packetType, conversationID, payload = packet
+            print('packet:', packet)
 
-            if packetTypes[packetType] == 'SET_LIGHT':
-                setLight(payload[0], payload[1])
-                print('Set light {} to {}'.format(payload[0], payload[1]))
-                send(genPacket('END_CONVERSATION', conversationID, b''))
+            processedPacket = True  # Assume True, set to False only if the two else statements at the end fire
+            if packetType < len(packetTypes):
+                if packetTypes[packetType] == 'SET_LIGHT':
+                    print('SET_LIGHT')
+                    setLight(payload[0], payload[1])
+                    print('Set light {} to {}'.format(payload[0], payload[1]))
+                    send(genPacket('END_CONVERSATION', conversationID, b''))
 
-            elif packetTypes[packetType] == 'GET_LIGHT':
-                value = getLight(payload[0])
-                send(genPacket('ACK', conversationID, int.to_bytes(value, 1, 'big')))
-                send(genPacket('END_CONVERSATION', conversationID, b''))
+                elif packetTypes[packetType] == 'GET_LIGHT':
+                    print('GET_LIGHT')
+                    value = getLight(payload[0])
+                    send(genPacket('ACK', conversationID, int.to_bytes(value, 1, 'big')))
+                    send(genPacket('END_CONVERSATION', conversationID, b''))
+
+                else: print('Unable to process packets of type {} at this time'.format(packetTypes[packetType])); processedPacket = False
+            
+            else: print('Unknown packet type:', packetType); processedPacket = False
 
         sleep(0.01)
 

@@ -63,16 +63,26 @@ class locomotive():
 
     def recv(self, maxPackets=-1, clearConversations=True):
         print('Receiving packets')
-        self.inBuffer += self.conn.recv(4096)
+        try: self.inBuffer += self.conn.recv(4096)
+        except socket.timeout: pass
         packets = []
-        while len(self.inBuffer):
+        while True:
             # print('inBuffer:', self.inBuffer)
             print('Decoding packet from buffer')
+            if len(self.inBuffer) < 10:
+                print('Attempting to receive more data')
+                try: self.inBuffer += self.conn.recv(4096)
+                except socket.timeout: pass
+
             if len(self.inBuffer) < 10:
                 print('Not enough data in buffer')
                 print(self.inBuffer)
                 break
+
             prefix = self.inBuffer[0:3]
+            if prefix != b'RF-':
+                print('Found data that is not a packet, discarding byte')
+
             packetType = int.from_bytes(self.inBuffer[3:4], 'big')
             conversationID = int.from_bytes(self.inBuffer[4:8], 'big')
             payloadSize = int.from_bytes(self.inBuffer[8:10], 'big')
@@ -89,8 +99,10 @@ class locomotive():
             # print('payload:', payload)
 
             self.inBuffer = self.inBuffer[payloadSize + 10:]
-            if clearConversations and self.packetTypes[packetType] == 'END_CONVERSATION': self.activeConversations.remove(conversationID); print('Conversation {} ended'.format(conversationID)); continue
-            packets.append((packetType, conversationID, payload))
+            print('Decoded packet:', (packetType, conversationID, payload))
+            if clearConversations and self.packetTypes[packetType] == 'END_CONVERSATION': self.activeConversations.remove(conversationID); print('Conversation {} ended'.format(conversationID))
+            else: packets.append((packetType, conversationID, payload))
+
         return packets
 
 
@@ -208,14 +220,14 @@ class mainWindow(QWidget):
                 self.selectedLoco = loco
 
     def toggleHeadlight(self):
-        print('toggleHeadlight')
         if self.selectedLoco is None: return
+        print('===== toggleHeadlight =====')
         self.selectedLoco.send(self.selectedLoco.genPacket('SET_LIGHT', -1, b'\x00' + (b'\x00' if self.selectedLoco.lights[0] else b'\x01')))
         self.selectedLoco.recv()
         
         self.selectedLoco.send(self.selectedLoco.genPacket('GET_LIGHT', -1, b'\x00'))
         conversationID = self.selectedLoco.activeConversations[-1]
-        packets = self.selectedLoco.recv()
+        packets = self.selectedLoco.recv(); print('packets:', packets)
         headlightStatus = None
         for packet in packets:
             if packet[1] == conversationID:
@@ -224,8 +236,12 @@ class mainWindow(QWidget):
                     break
             else: print('Unrelated packet:', packet)
 
-        if not headlightStatus is None:
-            self.headlightButton.setText('Headlight: ' + 'ON' if headlightStatus else 'OFF')
+        if headlightStatus is None:
+            print('Did not find a GET_LIGHT ACK packet')
+        else:
+            self.selectedLoco.lights[0] = headlightStatus
+            self.headlightButton.setText('Headlight: ' + ('ON' if headlightStatus else 'OFF'))
+            print('Updated headlight status')
 
 
     ## Networking ##
@@ -240,6 +256,7 @@ class mainWindow(QWidget):
 
         try:
             conn, addr = dedicatedSocket.accept()
+            conn.settimeout(0.5)
             self.locos.append(locomotive(str(addr), conn))
             self.locosList.addItem(self.locos[-1].name)
         except socket.timeout:
