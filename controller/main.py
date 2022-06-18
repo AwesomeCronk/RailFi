@@ -15,15 +15,14 @@ class locomotive():
         'SET_LIGHT',
         'GET_LIGHT',
         'E_STOP',
-        'ACK',
-        'END_CONVERSATION',
+        'ACKNOWLEDGE',
+        'CONCLUDE',
         'ERROR'
     ]
 
     def __init__(self, name, conn):
         self.name = name
         self.conn = conn
-        self.activeConversations = []
         self.inBuffer = b''
 
         self.lights = [False, False]
@@ -33,7 +32,7 @@ class locomotive():
         # Synchronize by sending GET_**** packets and setting variables with responses
         # print('Loco interface "{}" synchronized'.format(self.name))
     
-    def genPacket(self, packetType, conversationID, payload):
+    def genPacket(self, packetType, payload):
         print('Generating packet')        
         binary = b'RF-'
         
@@ -44,12 +43,7 @@ class locomotive():
         elif isinstance(packetType, int): pass
         else: raise ValueError('Invalid packet type "{}"'.format(packetType))
 
-        # Generate a new conversation ID
-        if conversationID == -1: conversationID = self.activeConversations[-1] + 2 if 0 < len(self.activeConversations) < 2 ** 31 else 0
-        if not conversationID in self.activeConversations: self.activeConversations.append(conversationID)
-
         binary += int.to_bytes(packetType, 1, 'big')
-        binary += int.to_bytes(conversationID, 4, 'big')
         if len(payload) >= 2 ** 16: raise ValueError('Payload too long')
         binary += int.to_bytes(len(payload), 2, 'big')
         binary += payload
@@ -57,52 +51,49 @@ class locomotive():
         print('Packet generation results:', binary)
         return binary
 
-    def send(self, data):
-        print('Sending packet data')
-        self.conn.sendall(data)
+    def send(self, packetType, payload):
+        print('Sending packet')
+        self.conn.sendall(self.genPacket(packetType, payload))
+        print('Sent packet')
 
-    def recv(self, maxPackets=-1, clearConversations=True):
+    def recv(self, numPackets, maxLoops=10):
+        inBuffer = self.inBuffer; conn = self.conn
         print('Receiving packets')
-        try: self.inBuffer += self.conn.recv(4096)
+        try: inBuffer += conn.recv(4096)
         except socket.timeout: pass
         packets = []
-        while True:
-            # print('inBuffer:', self.inBuffer)
-            print('Decoding packet from buffer')
-            if len(self.inBuffer) < 10:
-                print('Attempting to receive more data')
-                try: self.inBuffer += self.conn.recv(4096)
+        for i in range(maxLoops):
+            # print('inBuffer:', inBuffer)
+            if len(inBuffer) < 6:
+                # print('Attempting to receive more data')
+                try: inBuffer += conn.recv(4096)
                 except socket.timeout: pass
 
-            if len(self.inBuffer) < 10:
-                print('Not enough data in buffer')
-                print(self.inBuffer)
-                break
+            if len(inBuffer) >= 6:
+                # print('Decoding packet from buffer')
+                prefix = inBuffer[0:3]
+                if prefix != b'RF-':
+                    # print('Found data that is not a packet, discarding first byte in buffer')
+                    inBuffer = inBuffer[1:]
 
-            prefix = self.inBuffer[0:3]
-            if prefix != b'RF-':
-                print('Found data that is not a packet, discarding byte')
+                packetType = int.from_bytes(inBuffer[3:4], 'big')
+                payloadSize = int.from_bytes(inBuffer[4:6], 'big')
+                
+                if len(inBuffer) < payloadSize + 6:
+                    # print('Packet incomplete, waiting to receive more data in buffer')
+                    break
 
-            packetType = int.from_bytes(self.inBuffer[3:4], 'big')
-            conversationID = int.from_bytes(self.inBuffer[4:8], 'big')
-            payloadSize = int.from_bytes(self.inBuffer[8:10], 'big')
-            # print('prefix:', prefix)
-            # print('packetType:', self.packetTypes[packetType])
-            # print('conversationID:', conversationID)
-            # print('payloadSize:', payloadSize)
-            
-            if len(self.inBuffer) < payloadSize + 10:
-                print('Packet incomplete, waiting to receive more data in buffer')
-                break
+                payload = inBuffer[6:payloadSize + 6]
 
-            payload = self.inBuffer[10:payloadSize + 10]
-            # print('payload:', payload)
+                inBuffer = inBuffer[payloadSize + 6:]
+                # print('Decoded packet:', (packetType, payload))
+                packets.append((packetType, payload))
 
-            self.inBuffer = self.inBuffer[payloadSize + 10:]
-            print('Decoded packet:', (packetType, conversationID, payload))
-            if clearConversations and self.packetTypes[packetType] == 'END_CONVERSATION': self.activeConversations.remove(conversationID); print('Conversation {} ended'.format(conversationID))
-            else: packets.append((packetType, conversationID, payload))
+                if len(packets) >= numPackets: break
 
+            # else:
+            #     print('Not enough data in buffer')
+        
         return packets
 
 
@@ -129,12 +120,21 @@ class trafficCop(QThread):
                     conn.close()
                     continue
 
-                dedicatedPort = 4001 + len(self.parent().locos)
+                dedicatedPort = self.parent().trafficPort + 1   # Start at the first port after the traffic port
+                dedicatedSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                # Walk up port numbers until one works
+                bound = False
+                while not bound:
+                    try: dedicatedSocket.bind(('', dedicatedPort)); bound = True
+                    except OSError: dedicatedPort += 1
+                dedicatedSocket.listen(1)
+                dedicatedSocket.settimeout(1.0)
+
                 conn.sendall(int.to_bytes(dedicatedPort, 2, 'big'))
                 print('Directed new loco to port {}'.format(dedicatedPort))
 
                 conn.close()
-                self.newConnection.emit((dedicatedPort,))
+                self.newConnection.emit((dedicatedSocket,))
 
                 # while not self.parent().processingConnection:
                 #     if not self.parent().runFlag: break
@@ -151,12 +151,17 @@ class mainWindow(QWidget):
         QWidget.__init__(self)
         self.runFlag = True
         self.processingConnection = False
+        self.trafficPort = 4000
 
         self.initUI()
 
         # Traffic cop setup (for directing locos to dedicated sockets when they connect)
         self.trafficSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.trafficSocket.bind(('', 4000))
+        # Walk up port numbers until one works
+        bound = False
+        while not bound:
+            try: self.trafficSocket.bind(('', self.trafficPort)); bound = True
+            except OSError: self.trafficPort += 1
         self.trafficSocket.listen(5)
         self.trafficSocket.settimeout(0.5)
         self.trafficCop = trafficCop(self)
@@ -172,6 +177,21 @@ class mainWindow(QWidget):
         print('Waiting for threads to stop')
         time.sleep(0.6)
         event.accept()
+
+    def newLocoConnecting(self, args):
+        dedicatedSocket = args[0]
+        print('Loco connecting')
+        self.processingConnection = True
+
+        try:
+            conn, addr = dedicatedSocket.accept()
+            conn.settimeout(0.2)
+            self.locos.append(locomotive(str(addr), conn))
+            self.locosList.addItem(self.locos[-1].name)
+        except socket.timeout:
+            print('Loco did not connect in time')
+
+        self.processingConnection = False
 
 
     ## UI functions ##
@@ -222,47 +242,22 @@ class mainWindow(QWidget):
     def toggleHeadlight(self):
         if self.selectedLoco is None: return
         print('===== toggleHeadlight =====')
-        self.selectedLoco.send(self.selectedLoco.genPacket('SET_LIGHT', -1, b'\x00' + (b'\x00' if self.selectedLoco.lights[0] else b'\x01')))
-        self.selectedLoco.recv()
+
+        # Perform a SET_LIGHT
+        self.selectedLoco.send('SET_LIGHT', b'\x00' + (b'\x00' if self.selectedLoco.lights[0] else b'\x01'))
+        response = self.selectedLoco.recv(1)[0]
+        print('Acknowledged:', self.selectedLoco.packetTypes[response[0]] == 'ACKNOWLEDGE')
         
-        self.selectedLoco.send(self.selectedLoco.genPacket('GET_LIGHT', -1, b'\x00'))
-        conversationID = self.selectedLoco.activeConversations[-1]
-        packets = self.selectedLoco.recv(); print('packets:', packets)
-        headlightStatus = None
-        for packet in packets:
-            if packet[1] == conversationID:
-                if self.selectedLoco.packetTypes[packet[0]] == 'ACK':
-                    headlightStatus = bool(int.from_bytes(packet[2], 'big'))
-                    break
-            else: print('Unrelated packet:', packet)
-
-        if headlightStatus is None:
-            print('Did not find a GET_LIGHT ACK packet')
-        else:
-            self.selectedLoco.lights[0] = headlightStatus
-            self.headlightButton.setText('Headlight: ' + ('ON' if headlightStatus else 'OFF'))
-            print('Updated headlight status')
-
-
-    ## Networking ##
-    def newLocoConnecting(self, args):
-        dedicatedPort = args[0]
-        print('Loco connecting to port {}'.format(dedicatedPort))
-        self.processingConnection = True
-        dedicatedSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        dedicatedSocket.bind(('', dedicatedPort))
-        dedicatedSocket.listen(1)
-        dedicatedSocket.settimeout(1.0)
-
-        try:
-            conn, addr = dedicatedSocket.accept()
-            conn.settimeout(0.5)
-            self.locos.append(locomotive(str(addr), conn))
-            self.locosList.addItem(self.locos[-1].name)
-        except socket.timeout:
-            print('Loco did not connect in time')
-
-        self.processingConnection = False
+        # Perform a GET_LIGHT
+        self.selectedLoco.send('GET_LIGHT', b'\x00')
+        response = self.selectedLoco.recv(1)[0]
+        print('Acknowledged:', self.selectedLoco.packetTypes[response[0]] == 'ACKNOWLEDGE')
+        
+        # Update locomotive interface and UI
+        headlightStatus = bool(int.from_bytes(response[1], 'big'))
+        self.selectedLoco.lights[0] = headlightStatus
+        self.headlightButton.setText('Headlight: ' + ('ON' if headlightStatus else 'OFF'))
+        print('Updated headlight status')
 
 
 if __name__ == '__main__':

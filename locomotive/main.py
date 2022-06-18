@@ -301,6 +301,7 @@ def connectController(ssid, password, addr, trafficPort):  # Establish a connect
     print('Pausing to let controller initialize dedicated socket')
     sleep(0.5)
     controllerSocket.connect((addr, dedicatedPort))
+    controllerSocket.settimeout(0.5)
     print('Connected to controller')
     return True
     
@@ -312,15 +313,15 @@ packetTypes = [
     'SET_LIGHT',
     'GET_LIGHT',
     'E_STOP',
-    'ACK',
-    'END_CONVERSATION',
+    'ACKNOWLEDGE',
+    'CONCLUDE',
     'ERROR'
 ]
 
 activeConversations = []
 inBuffer = b''
 
-def genPacket(packetType, conversationID, payload):
+def genPacket(packetType, payload):
     print('Generating packet')        
     binary = b'RF-'
     
@@ -331,12 +332,7 @@ def genPacket(packetType, conversationID, payload):
     elif isinstance(packetType, int): pass
     else: raise ValueError('Invalid packet type "{}"'.format(packetType))
 
-    # Generate a new conversation ID
-    if conversationID == -1: conversationID = activeConversations[-1] + 2 if 0 < len(activeConversations) < 2 ** 31 else 0
-    if not conversationID in activeConversations: activeConversations.append(conversationID)
-
     binary += int.to_bytes(packetType, 1, 'big')
-    binary += int.to_bytes(conversationID, 4, 'big')
     if len(payload) >= 2 ** 16: raise ValueError('Payload too long')
     binary += int.to_bytes(len(payload), 2, 'big')
     binary += payload
@@ -344,39 +340,49 @@ def genPacket(packetType, conversationID, payload):
     print('Packet generation results:', binary)
     return binary
 
-def send(data):
-    print('Sending packet data')
-    controllerSocket.sendall(data)
+def send(packetType, payload):
+    print('Sending packet')
+    controllerSocket.sendall(genPacket(packetType, payload))
+    print('Sent packet')
 
-def recv(maxPackets=-1, clearConversations=True):
-    global inBuffer
-    inBuffer += controllerSocket.recv(4096)
+def recv(numPackets, maxLoops=10):
+    global inBuffer; conn = controllerSocket
+    print('Receiving packets')
+    try: inBuffer += conn.recv(4096)
+    except socket.timeout: pass
     packets = []
-    while len(inBuffer):
-        print('Decoding packet from buffer')
-        if len(inBuffer) < 10:
-            print('Not enough data in buffer')
-            print(inBuffer)
-            break
-        prefix = inBuffer[0:3]
-        packetType = int.from_bytes(inBuffer[3:4], 'big')
-        conversationID = int.from_bytes(inBuffer[4:8], 'big')
-        payloadSize = int.from_bytes(inBuffer[8:10], 'big')
-        # print('prefix:', prefix)
-        # print('packetType:', packetTypes[packetType])
-        # print('conversationID:', conversationID)
-        # print('payloadSize:', payloadSize)
-        
-        if len(inBuffer) < payloadSize + 10:
-            print('Packet incomplete, waiting to receive more data in buffer')
-            return packets
+    for i in range(maxLoops):
+        # print('inBuffer:', inBuffer)
+        if len(inBuffer) < 6:
+            # print('Attempting to receive more data')
+            try: inBuffer += conn.recv(4096)
+            except socket.timeout: pass
 
-        payload = inBuffer[10:payloadSize + 10]
-        # print(payload)
+        if len(inBuffer) >= 6:
+            # print('Decoding packet from buffer')
+            prefix = inBuffer[0:3]
+            if prefix != b'RF-':
+                # print('Found data that is not a packet, discarding first byte in buffer')
+                inBuffer = inBuffer[1:]
 
-        inBuffer = inBuffer[payloadSize + 10:]
-        if clearConversations and packetTypes[packetType] == 'END_CONVERSATION': activeConversations.remove(conversationID); print('Conversation {} ended'.format(conversationID))
-        else: packets.append((packetType, conversationID, payload))
+            packetType = int.from_bytes(inBuffer[3:4], 'big')
+            payloadSize = int.from_bytes(inBuffer[4:6], 'big')
+            
+            if len(inBuffer) < payloadSize + 6:
+                # print('Packet incomplete, waiting to receive more data in buffer')
+                break
+
+            payload = inBuffer[6:payloadSize + 6]
+
+            inBuffer = inBuffer[payloadSize + 6:]
+            # print('Decoded packet:', (packetType, payload))
+            packets.append((packetType, payload))
+
+            if len(packets) >= numPackets: break
+
+        # else:
+        #     print('Not enough data in buffer')
+    
     return packets
 
 def main():
@@ -385,25 +391,30 @@ def main():
 
     # Operation
     while True:
-        packets = recv()
-        for packet in packets:
+        packets = recv(1)
+        if len(packets):
+            packet = packets[0]
             print('===== Processing command packet =====')
-            packetType, conversationID, payload = packet
-            print('packet:', packet)
+            packetType, payload = packet
+            print('packet:', packet, end=' - ')
 
             processedPacket = True  # Assume True, set to False only if the two else statements at the end fire
             if packetType < len(packetTypes):
+                
                 if packetTypes[packetType] == 'SET_LIGHT':
                     print('SET_LIGHT')
                     setLight(payload[0], payload[1])
                     print('Set light {} to {}'.format(payload[0], payload[1]))
-                    send(genPacket('END_CONVERSATION', conversationID, b''))
+                    send('ACKNOWLEDGE', b'')
+                    # response = recv(1)[0]   # Receive a CONCLUDE
+                    # print('response:', response)
 
                 elif packetTypes[packetType] == 'GET_LIGHT':
                     print('GET_LIGHT')
                     value = getLight(payload[0])
-                    send(genPacket('ACK', conversationID, int.to_bytes(value, 1, 'big')))
-                    send(genPacket('END_CONVERSATION', conversationID, b''))
+                    send('ACKNOWLEDGE', int.to_bytes(value, 1, 'big'))
+                    # response = recv(1)[0]   # Receive a CONCLUDE
+                    # print('response:', response)
 
                 else: print('Unable to process packets of type {} at this time'.format(packetTypes[packetType])); processedPacket = False
             
@@ -415,12 +426,18 @@ if __name__ == '__main__':
     sleep(1)
     getConfig()
     connected = False
+
+    # Attempt to connect based on config
     if 'controller-ssid' in config.keys() and 'controller-ssid-password' in config.keys() and 'controller-addr' in config.keys() and 'controller-traffic-port' in config.keys():
         print('Credentials for controller found in config, connecting...')
         connected = connectController(config['controller-ssid'], config['controller-ssid-password'], config['controller-addr'], int(config['controller-traffic-port']))
+    
+    # Attempt failed, enter discovery mode
     while not connected:
         print('Unable to connect to controller')
         controllerInfo = discoverController()
         connected = connectController(*controllerInfo)
     print('Connected to controller, ready to send/recv packets')
+
+    # All the normal stuff
     main()
