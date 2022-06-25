@@ -28,9 +28,16 @@ throttle = 0
 bootMode = 'real' if sys.implementation.name == 'micropython' else 'emulator' if sys.implementation.name == 'cpython' else 'unknown'
 
 if bootMode == 'real':
+    time.sleep_ms(1000)
     print('Boot mode: real')
 
     from machine import Pin, freq
+
+    bootPin = Pin(0, Pin.IN)
+    if bootPin.value() == 0:
+        print('Booting to REPL')
+        sys.exit()
+
     import network
     import usocket as socket
     import gc
@@ -38,8 +45,10 @@ if bootMode == 'real':
     freq(240000000)
     gc.collect()
 
+    # Sleep for t seconds
     def sleep(t):
         time.sleep_ms(int(t * 1000))
+
 
     # Hardware connections
     headLight = Pin(32, Pin.OUT)
@@ -129,6 +138,11 @@ elif bootMode == 'emulator':
 
 else:
     raise RuntimeError('Implementation "{}" not recognized'.format(sys.implementation.name))
+
+
+# Get current time in seconds
+def now():
+    return time.time_ns() / 1000000000
 
 
 ## Error handling ##
@@ -348,18 +362,18 @@ def send(packetType, payload):
 def recv(numPackets, maxLoops=10):
     global inBuffer; conn = controllerSocket
     print('Receiving packets')
-    try: inBuffer += conn.recv(4096)
-    except socket.timeout: pass
+    # try: inBuffer += conn.recv(4096)
+    # except OSError: pass
     packets = []
     for i in range(maxLoops):
         # print('inBuffer:', inBuffer)
         if len(inBuffer) < 6:
-            # print('Attempting to receive more data')
+            print('Attempting to receive more data')
             try: inBuffer += conn.recv(4096)
-            except socket.timeout: pass
+            except OSError: pass
 
         if len(inBuffer) >= 6:
-            # print('Decoding packet from buffer')
+            print('Decoding packet from buffer')
             prefix = inBuffer[0:3]
             if prefix != b'RF-':
                 # print('Found data that is not a packet, discarding first byte in buffer')
@@ -369,13 +383,13 @@ def recv(numPackets, maxLoops=10):
             payloadSize = int.from_bytes(inBuffer[4:6], 'big')
             
             if len(inBuffer) < payloadSize + 6:
-                # print('Packet incomplete, waiting to receive more data in buffer')
+                print('Packet incomplete, waiting to receive more data in buffer')
                 break
 
             payload = inBuffer[6:payloadSize + 6]
 
             inBuffer = inBuffer[payloadSize + 6:]
-            # print('Decoded packet:', (packetType, payload))
+            print('Decoded packet:', (packetType, payload))
             packets.append((packetType, payload))
 
             if len(packets) >= numPackets: break
@@ -395,6 +409,7 @@ def main():
         if len(packets):
             packet = packets[0]
             print('===== Processing command packet =====')
+            startTime = now()
             packetType, payload = packet
             print('packet:', packet, end=' - ')
 
@@ -420,10 +435,12 @@ def main():
             
             else: print('Unknown packet type:', packetType); processedPacket = False
 
+            endTime = now()
+            print('Time:', endTime - startTime)
+
         sleep(0.01)
 
 if __name__ == '__main__':
-    sleep(1)
     getConfig()
     connected = False
 

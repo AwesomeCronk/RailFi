@@ -60,14 +60,14 @@ class locomotive():
         inBuffer = self.inBuffer; conn = self.conn
         print('Receiving packets')
         try: inBuffer += conn.recv(4096)
-        except socket.timeout: pass
+        except OSError: pass
         packets = []
         for i in range(maxLoops):
             # print('inBuffer:', inBuffer)
             if len(inBuffer) < 6:
                 # print('Attempting to receive more data')
                 try: inBuffer += conn.recv(4096)
-                except socket.timeout: pass
+                except OSError: pass
 
             if len(inBuffer) >= 6:
                 # print('Decoding packet from buffer')
@@ -141,7 +141,7 @@ class trafficCop(QThread):
                 #     print('Traffic cop waiting for parent to begin processing last connection...')
                 #     time.sleep(0.1)
 
-            except socket.timeout:
+            except OSError:
                 pass
         self.finished.emit()
 
@@ -188,7 +188,7 @@ class mainWindow(QWidget):
             conn.settimeout(0.2)
             self.locos.append(locomotive(str(addr), conn))
             self.locosList.addItem(self.locos[-1].name)
-        except socket.timeout:
+        except OSError:
             print('Loco did not connect in time')
 
         self.processingConnection = False
