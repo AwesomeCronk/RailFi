@@ -16,7 +16,6 @@ class locomotive():
         'GET_LIGHT',
         'E_STOP',
         'ACKNOWLEDGE',
-        'CONCLUDE',
         'ERROR'
     ]
 
