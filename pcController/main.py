@@ -24,6 +24,7 @@ class locomotive():
         self.conn = conn
         self.inBuffer = b''
 
+        self.throttle = 0
         self.lights = [False, False]
 
         print('Loco interface "{}" initialized'.format(self.name))
@@ -221,14 +222,17 @@ class mainWindow(QWidget):
         self.throttleLabel = QLabel(self)
         self.throttleLabel.setText('Throttle: 0%')
         self.throttleLabel.move(self.locosList.width() + (2 * padding), self.locoName.height() + self.headlightButton.height() + self.rearlightButton.height() + (4 * padding))
+        self.throttleLabel.resize(160, 40)
         
         self.throttleSlider = QSlider(Qt.Orientation.Vertical, self)
         self.throttleSlider.move(self.locosList.width() + (2 * padding), self.locoName.height() + self.headlightButton.height() + self.rearlightButton.height() + self.throttleLabel.height() + (5 * padding))
         self.throttleSlider.resize(30, 100)
+        self.throttleSlider.valueChanged[int].connect(self.setThrottle)
 
         self.directionButton = QPushButton(self)
         self.directionButton.setText('Direction: FWD')
         self.directionButton.move(self.locosList.width() + (2 * padding), self.locoName.height() + self.headlightButton.height() + self.rearlightButton.height() + self.throttleLabel.height() + self.throttleSlider.height() + (6 * padding))
+        self.directionButton.clicked.connect(self.reverse)
 
     
     ## Loco Control ##
@@ -238,6 +242,39 @@ class mainWindow(QWidget):
             if loco.name == caller.text():
                 self.selectedLoco = loco
 
+    def _setThrottle(self):
+        print('Setting throttle to', self.selectedLoco.throttle)
+
+        # Perform a SET_THROTTLE
+        self.selectedLoco.send('SET_THROTTLE', int.to_bytes(self.selectedLoco.throttle, 1, 'big', signed=True))
+        response = self.selectedLoco.recv(1)[0]
+        print('Acknowledged:', locomotive.packetTypes[response[0]] == 'ACKNOWLEDGE')
+
+        # Perform as GET_THROTTLE
+        self.selectedLoco.send('GET_THROTTLE', b'')
+        response = self.selectedLoco.recv(1)[0]
+        print('Acknowledged:', locomotive.packetTypes[response[0]] == 'ACKNOWLEDGE')
+
+        # Update locomotive interface and UI
+        throttleStatus = int.from_bytes(response[1], 'big', signed=True)
+        if self.selectedLoco.throttle != throttleStatus: print('DISCREPANCY: {} vs {}'.format(self.selectedLoco.throttle, throttleStatus))
+        self.selectedLoco.throttle = throttleStatus
+        self.throttleLabel.setText('Throttle: {}%'.format(+throttleStatus))
+        self.directionButton.setText('Direction: ' + 'FWD' if throttleStatus >= 0 else 'REV')
+
+    def setThrottle(self, value):
+        if self.selectedLoco is None: return
+        print('===== setThrottle =====')
+        self.selectedLoco.throttle = round(value * 1.01) * (1 if self.selectedLoco.throttle >= 0 else -1)
+        self._setThrottle()
+
+    def reverse(self):
+        if self.selectedLoco is None: return
+        print('===== reverse =====')
+        self.selectedLoco.throttle *= -1
+        self._setThrottle()
+        
+
     def toggleHeadlight(self):
         if self.selectedLoco is None: return
         print('===== toggleHeadlight =====')
@@ -245,12 +282,12 @@ class mainWindow(QWidget):
         # Perform a SET_LIGHT
         self.selectedLoco.send('SET_LIGHT', b'\x00' + (b'\x00' if self.selectedLoco.lights[0] else b'\x01'))
         response = self.selectedLoco.recv(1)[0]
-        print('Acknowledged:', self.selectedLoco.packetTypes[response[0]] == 'ACKNOWLEDGE')
+        print('Acknowledged:', locomotive.packetTypes[response[0]] == 'ACKNOWLEDGE')
         
         # Perform a GET_LIGHT
         self.selectedLoco.send('GET_LIGHT', b'\x00')
         response = self.selectedLoco.recv(1)[0]
-        print('Acknowledged:', self.selectedLoco.packetTypes[response[0]] == 'ACKNOWLEDGE')
+        print('Acknowledged:', locomotive.packetTypes[response[0]] == 'ACKNOWLEDGE')
         
         # Update locomotive interface and UI
         headlightStatus = bool(int.from_bytes(response[1], 'big'))

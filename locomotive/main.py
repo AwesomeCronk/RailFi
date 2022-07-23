@@ -31,7 +31,7 @@ if bootMode == 'real':
     time.sleep_ms(1000)
     print('Boot mode: real')
 
-    from machine import Pin, freq
+    from machine import Pin, PWM, freq
 
     bootPin = Pin(0, Pin.IN)
     if bootPin.value() == 0:
@@ -59,58 +59,27 @@ if bootMode == 'real':
         lights[light].value(value)
 
     def getLight(light):
-        return lights[light].value()
+        return lights[light].value()    
 
-    class motorInterface():
-        def __init__(self):
-            self.SDI = Pin(19, Pin.IN)
-            self.SDO = Pin(21, Pin.OUT, value=0)
-            self.SCK = Pin(22, Pin.OUT, value=0)
-            self.EN = Pin(23, Pin.OUT, value=0)
-            self.CSN = Pin(18, Pin.OUT, value=1)
-
-        def enable(self): self.EN.value(1)
-        def disable(self): self.EN.value(0)
-        def select(self): self.CSN.value(0)
-        def deselect(self): self.CSN.value(1)
-
-        def interact(self, rw, address, labt, data):
-            # Prepare the command
-            bits = [0] * 16
-            bits[0] = 1
-            bits[1] = labt  # Should be 1 in all known configurations
-            for i in (4, 3, 2, 1, 0):
-                bits[2 + i] = address // (2 ** i)
-                address = address % (2 ** i)
-            bits[7] = rw
-            for i in (7, 6, 5, 4, 3, 2, 1, 0):
-                bits[8 + i] = data // (2 ** i)
-                data = data % (2 ** i)
-            print('Preparing to send', ''.join([str(bit) for bit in bits]))
-
-            # Interact with the driver chip
-            self.select()
-            globalErrorFlag = self.SDI.value()
-            if globalErrorFlag: print('GEF set')
-
-            for i in range(16):
-                self.SCK.value(1)
-                self.SDO.value(bits[i])
-                self.SCK.value(0)
-                bits[i] = self.SDI.value()
-
-            self.deselect()
-            print('Responded with', ''.join([str(bit) for bit in bits]))
-
-
-    motor = motorInterface()
+    motorDirPin = Pin(10, Pin.OUT, Pin.PULL_DOWN, value=0)
+    motorSpeedPWM = PWM(Pin(27, Pin.OUT, Pin.PULL_DOWN, value=0), duty=0, freq=500)
+    throttle = 0
 
     def setThrottle(value):
-        command = b'00' # NOT AN ACTUAL COMMAND
-        response = bytearray(len(command))
-        motor.write_readinto(command, response)
-        print(response)
+        global throttle; throttle = value
+        motorDir = value >= 0
+        motorSpeed = round(value * 10.23)
 
+        print('Throttle setting: {} PWM duty: {}'.format(value, motorSpeed))
+
+        motorDirPin.value(int(motorDir))    # When direction switch is set, use int(motorDir != motorFlip)
+        if motorDir:
+            motorSpeedPWM.duty(motorSpeed)
+        else:
+            motorSpeedPWM.duty(1023 - motorSpeed)
+
+    def getThrottle():
+        return throttle
     
     ap = None   # DO NOT reference outside of platform abstraction functions!!!
     
@@ -167,6 +136,15 @@ elif bootMode == 'emulator':
     def getLight(light):
         return lights[light]
 
+    throttle = 0
+
+    def setThrottle(value):
+        global throttle
+        throttle = value
+
+    def getThrottle():
+        return throttle
+
 
     def startAP(apName):
         print('Pretending to start access point "{}"'.format(apName))
@@ -211,22 +189,22 @@ def raiseError(code):
     currentError = codeNum
     print('ERROR {}: {}'.format(codeNum, codeName))
 
-    setLight('headlight', 0)
-    setLight('rearlight', 0)
+    setLight(0, 0)
+    setLight(1, 0)
     sleep(0.5)
 
     while True:
         # Two quick blinks to indicate errors
         for i in range(4):
-            setLight('headlight', 1 - getLight('headlight'))
-            setLight('rearlight', 1 - getLight('rearlight'))
+            setLight(0, 1 - getLight(0))
+            setLight(1, 1 - getLight(1))
             sleep(0.1)
 
         # Blink <codeNum> times
         for i in range(codeNum * 2):
             sleep(0.4)
-            setLight('headlight', 1 - getLight('headlight'))
-            setLight('rearlight', 1 - getLight('rearlight'))
+            setLight(0, 1 - getLight(0))
+            setLight(1, 1 - getLight(1))
 
         sleep(1)
 
@@ -416,7 +394,7 @@ def recv(numPackets, maxLoops=10):
     for i in range(maxLoops):
         # print('inBuffer:', inBuffer)
         if len(inBuffer) < 6:
-            print('Attempting to receive more data')
+            # print('Attempting to receive more data')
             try: inBuffer += conn.recv(4096)
             except OSError: pass
 
@@ -463,8 +441,22 @@ def main():
 
             processedPacket = True  # Assume True, set to False only if the two else statements at the end fire
             if packetType < len(packetTypes):
+
+
+                if packetTypes[packetType] == 'SET_THROTTLE':
+                    print('SET_THROTTLE')
+                    value = int.from_bytes(payload, 'big')
+                    if value >= 128: value -= 256
+                    setThrottle(value)
+                    print('Set throttle to {}'.format(throttle))
+                    send('ACKNOWLEDGE', b'')
+
+                elif packetTypes[packetType] == 'GET_THROTTLE':
+                    print('GET_THROTTLE')
+                    value = getThrottle()
+                    send('ACKNOWLEDGE', int.to_bytes((value + 256) % 256, 1, 'big'))
                 
-                if packetTypes[packetType] == 'SET_LIGHT':
+                elif packetTypes[packetType] == 'SET_LIGHT':
                     print('SET_LIGHT')
                     setLight(payload[0], payload[1])
                     print('Set light {} to {}'.format(payload[0], payload[1]))
@@ -475,14 +467,8 @@ def main():
                     value = getLight(payload[0])
                     send('ACKNOWLEDGE', int.to_bytes(value, 1, 'big'))
 
-                elif packetTypes[packetType] == 'SET_THROTTLE':
-                    print('SET_THROTTLE')
-                    setThrottle(payload[0])
-                    print('Set throttle to {}'.format(payload[0]))
-                    send('ACKNOWLEDGE', b'')
 
                 else: print('Unable to process packets of type {} at this time'.format(packetTypes[packetType])); processedPacket = False
-            
             else: print('Unknown packet type:', packetType); processedPacket = False
 
             endTime = now()
@@ -491,20 +477,42 @@ def main():
         sleep(0.01)
 
 if __name__ == '__main__':
-    getConfig()
-    connected = False
+    try:
+        getConfig()
+        connected = False
 
-    # Attempt to connect based on config
-    if 'controller-ssid' in config.keys() and 'controller-ssid-password' in config.keys() and 'controller-addr' in config.keys() and 'controller-traffic-port' in config.keys():
-        print('Credentials for controller found in config, connecting...')
-        connected = connectController(config['controller-ssid'], config['controller-ssid-password'], config['controller-addr'], int(config['controller-traffic-port']))
-    
-    # Attempt failed, enter discovery mode
-    while not connected:
-        print('Unable to connect to controller')
-        controllerInfo = discoverController()
-        connected = connectController(*controllerInfo)
-    print('Connected to controller, ready to send/recv packets')
+        # Attempt to connect based on config
+        credentialsFound = 'controller-ssid' in config.keys()
+        credentialsFound = credentialsFound and 'controller-ssid-password' in config.keys()
+        credentialsFound = credentialsFound and 'controller-addr' in config.keys()
+        credentialsFound = credentialsFound and 'controller-traffic-port' in config.keys()
+        if credentialsFound:
+            print('Credentials for controller found in config, connecting...')
+            credentials = [config['controller-ssid']]
+            credentials.append(config['controller-ssid-password'])
+            credentials.append(config['controller-addr'])
+            credentials.append(int(config['controller-traffic-port']))
+            connected = connectController(*credentials)
+        
+        # Attempt failed, enter discovery mode
+        while not connected:
+            print('Unable to connect to controller')
+            controllerInfo = discoverController()
+            connected = connectController(*controllerInfo)
+        print('Connected to controller, ready to send/recv packets')
 
-    # All the normal stuff
-    main()
+        # All the normal stuff
+        main()
+
+    except BaseException as exception:
+        print('===== RailFi locomotive firmware has crashed =====')
+        if bootMode == 'real':
+            from uio import StringIO; strIO = StringIO()
+            sys.print_exception(exception, strIO)
+            tb = strIO.getvalue()
+            with open('traceback.log', 'a') as tbFile:
+                tbFile.write(tb)
+                print('Traceback saved to traceback.log')
+        else:
+            from traceback import format_exc; tb = format_exc()
+        print(tb, end='')
