@@ -23,13 +23,26 @@ configRequiredEntries = [
 config = {}
 throttle = 0
 
+DEBUG = 0
+INFO = 1
+ERROR = 2
+reportThres = DEBUG
+
+def setReportThres(thres):
+    global reportThres
+    reportThres = thres
+
+def report(level, msg, *args, **kwargs):
+    if level >= reportThres:
+        print(msg, *args, **kwargs)
+
 
 ## Emulation handling ##
 bootMode = 'real' if sys.implementation.name == 'micropython' else 'emulator' if sys.implementation.name == 'cpython' else 'unknown'
 
 if bootMode == 'real':
     time.sleep_ms(1000)
-    print('Boot mode: real')
+    report(INFO, 'Boot mode: real')
 
     from machine import Pin, PWM, freq
 
@@ -70,13 +83,13 @@ if bootMode == 'real':
         motorDir = value >= 0
         motorSpeed = round(value * 10.23)
 
-        print('Throttle setting: {} PWM duty: {}'.format(value, motorSpeed))
+        report(DEBUG, 'Throttle setting: {} PWM duty: {}'.format(value, motorSpeed))
 
         motorDirPin.value(int(motorDir))    # When direction switch is set, use int(motorDir != motorFlip)
         if motorDir:
-            motorSpeedPWM.duty(motorSpeed)
-        else:
             motorSpeedPWM.duty(1023 - motorSpeed)
+        else:
+            motorSpeedPWM.duty(motorSpeed)
 
     def getThrottle():
         return throttle
@@ -105,12 +118,12 @@ if bootMode == 'real':
         sta.active(True)
         sta.scan()
         sta.connect(ssid, password)
-        for i in range(5):
+        for i in range(10):
             if sta.isconnected():
                 break
-            print('Waiting for STA to connect...')
+            report(INFO, 'Waiting for STA to connect...')
             time.sleep(0.5)
-        print(sta.ifconfig())
+        report(DEBUG, sta.ifconfig())
 
     def stopSTA():
         sta.active(False)
@@ -118,7 +131,7 @@ if bootMode == 'real':
         gc.collect()
 
 elif bootMode == 'emulator':
-    print('Boot mode: emulator')
+    report(INFO, 'Boot mode: emulator')
 
     import socket
 
@@ -130,7 +143,7 @@ elif bootMode == 'emulator':
     def setLight(light, value):
         global lights
         lights[light] = value
-        # print('Light "{}" set to {}'.format(light, value))
+        # report(DEBUG, 'Light "{}" set to {}'.format(light, value))
         displayHardware()
 
     def getLight(light):
@@ -147,17 +160,17 @@ elif bootMode == 'emulator':
 
 
     def startAP(apName):
-        print('Pretending to start access point "{}"'.format(apName))
+        report(INFO, 'Pretending to start access point "{}"'.format(apName))
         return '<wifi>', '<ip address>'
 
     def stopAP():
-        print('Pretending to stop access point')
+        report(INFO, 'Pretending to stop access point')
 
     def startSTA(ssid, password):
-        print('Pretending to start station and connect to {}'.format(ssid))
+        report(INFO, 'Pretending to start station and connect to {}'.format(ssid))
 
     def stopSTA():
-        print('Pretending to stop station')
+        report(INFO, 'Pretending to stop station')
 
 
     # Hardware display
@@ -187,7 +200,7 @@ def raiseError(code):
         codeNum = errorCodes.index(code)
 
     currentError = codeNum
-    print('ERROR {}: {}'.format(codeNum, codeName))
+    report(ERROR, 'ERROR {}: {}'.format(codeNum, codeName))
 
     setLight(0, 0)
     setLight(1, 0)
@@ -239,45 +252,45 @@ def getConfig(configPath='config.txt'):
 controllerSocket = None
 
 def discoverController():
-    print('===== Entering discovery mode =====')
+    report(INFO, '===== Entering discovery mode =====')
     # Host network RailFi_<loco name>_<loco number>
     apName = 'RailFi_Discover_' + config['road-acronym'] + '_' + config['loco-number']
     port = 2000
     ssid, locoIP = startAP(apName)
-    print('AP Info:\nSSID: {}\nLoco IP: {}\nLoco Handshake Port: {}'.format(ssid, locoIP, port))
+    report(INFO, 'AP Info:\nSSID: {}\nLoco IP: {}\nLoco Handshake Port: {}'.format(ssid, locoIP, port))
 
     # Serve a socket for controllers to connect to
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(('', port))
     sock.listen(5)
-    print('Socket bound')
+    report(INFO, 'Socket bound')
 
     # if bootMode == 'real':
     #     print(gc.mem_free())
 
     haveController = False
     while not haveController:
-        print('Waiting for connection...')
+        report(INFO, 'Waiting for connection...')
         conn, addr = sock.accept()
         # conn.settimeout(0.25)     # Uncomment if a timeout proves necessary
-        print('Controller connected for discovery')
+        report(INFO, 'Controller connected for discovery')
 
         # First contact: Controller sends 0xffff, Locomotive responds 0xffff
         firstContact = conn.recv(2)
         if firstContact != b'\xff\xff':
-            print('First contact incorrect')
+            report(INFO, 'First contact incorrect')
             haveController = False
             conn.send(b'\xde\xad\xbe\xef')
             conn.close()
             continue
         conn.send(b'\xff\xff')
-        print('First contact correct')
+        report(INFO, 'First contact correct')
 
         # Get password
         try:
             password = conn.recv(16).decode('UTF-8')
         except UnicodeError:
-            print('Bad password data')
+            report(INFO, 'Bad password data')
             haveController = False
             conn.send(b'\xde\xad\xbe\xef')
             conn.close()
@@ -285,13 +298,13 @@ def discoverController():
             
         # Test password
         if password != config['password']:
-            print('Password incorrect')
+            report(INFO, 'Password incorrect')
             haveController = False
             conn.send(b'\xde\xad\xbe\xef')
             conn.close()
             continue
         conn.send(b'\xff\xff')
-        print('Password correct')
+        report(INFO, 'Password correct')
 
         # Get AP info (ssid, password) and API info (addr, port)
         ssid = conn.recv(32).decode('utf-8')
@@ -302,13 +315,13 @@ def discoverController():
         conn.close()
         stopAP()
         haveController = True
-        print('Discovery complete, controller info obtained')
+        report(INFO, 'Discovery complete, controller info obtained')
         return (ssid, password, addr, port)
 
 def connectController(ssid, password, addr, trafficPort):  # Establish a connection to the controller and globalize the socket, return bool of success
     global controllerSocket
 
-    print('===== Connecting to controller "{}" on access point "{}" ====='.format(addr, ssid))
+    report(INFO, '===== Connecting to controller "{}" on access point "{}" ====='.format(addr, ssid))
     startSTA(ssid, password)
     trafficSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -318,33 +331,33 @@ def connectController(ssid, password, addr, trafficPort):  # Establish a connect
             trafficSocket.connect((addr, trafficPort))
             break
         except OSError:
-            print('Connection timed out')
+            report(INFO, 'Connection timed out')
             if i == 4:
-                print('Connection timed out too many times')
+                report(INFO, 'Connection timed out too many times')
                 return False
-    print('Connected to traffic cop')
+    report(INFO, 'Connected to traffic cop')
 
     if trafficSocket.recv(2) != b'\x00\x00':
         trafficSocket.send(b'\xde\xad\xbe\xef')
         trafficSocket.close()
-        print('First contact incorrect')
+        report(INFO, 'First contact incorrect')
         return False
     trafficSocket.sendall(b'\x00\x00')
-    print('Completed first contact')
+    report(INFO, 'Completed first contact')
 
     dedicatedPort = int.from_bytes(trafficSocket.recv(2), 'big')
     trafficSocket.sendall(b'\x00\x00')
-    print('Directed to port {}'.format(dedicatedPort))
+    report(INFO, 'Directed to port {}'.format(dedicatedPort))
 
     trafficSocket.close()
-    print('Disconnected from traffic cop')
+    report(INFO, 'Disconnected from traffic cop')
 
     controllerSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    print('Pausing to let controller initialize dedicated socket')
+    report(INFO, 'Pausing to let controller initialize dedicated socket')
     sleep(0.5)
     controllerSocket.connect((addr, dedicatedPort))
-    controllerSocket.settimeout(0.5)
-    print('Connected to controller')
+    controllerSocket.settimeout(0.1)
+    report(INFO, 'Connected to controller')
     return True
     
 
@@ -362,7 +375,7 @@ packetTypes = [
 inBuffer = b''
 
 def genPacket(packetType, payload):
-    print('Generating packet')        
+    report(DEBUG, 'Generating packet')        
     binary = b'RF-'
     
     # Get packet type as int
@@ -377,17 +390,16 @@ def genPacket(packetType, payload):
     binary += int.to_bytes(len(payload), 2, 'big')
     binary += payload
 
-    print('Packet generation results:', binary)
+    report(DEBUG, 'Packet generation results:', binary)
     return binary
 
 def send(packetType, payload):
-    print('Sending packet')
+    report(DEBUG, 'Sending packet')
     controllerSocket.sendall(genPacket(packetType, payload))
-    print('Sent packet')
 
 def recv(numPackets, maxLoops=10):
     global inBuffer; conn = controllerSocket
-    print('Receiving packets')
+    report(DEBUG, 'Receiving packets')
     # try: inBuffer += conn.recv(4096)
     # except OSError: pass
     packets = []
@@ -399,7 +411,7 @@ def recv(numPackets, maxLoops=10):
             except OSError: pass
 
         if len(inBuffer) >= 6:
-            print('Decoding packet from buffer')
+            report(DEBUG, 'Decoding packet from buffer')
             prefix = inBuffer[0:3]
             if prefix != b'RF-':
                 # print('Found data that is not a packet, discarding first byte in buffer')
@@ -409,13 +421,13 @@ def recv(numPackets, maxLoops=10):
             payloadSize = int.from_bytes(inBuffer[4:6], 'big')
             
             if len(inBuffer) < payloadSize + 6:
-                print('Packet incomplete, waiting to receive more data in buffer')
+                report(DEBUG, 'Packet incomplete, waiting to receive more data in buffer')
                 break
 
             payload = inBuffer[6:payloadSize + 6]
 
             inBuffer = inBuffer[payloadSize + 6:]
-            print('Decoded packet:', (packetType, payload))
+            report(DEBUG, 'Decoded packet:', (packetType, payload))
             packets.append((packetType, payload))
 
             if len(packets) >= numPackets: break
@@ -426,7 +438,7 @@ def recv(numPackets, maxLoops=10):
     return packets
 
 def main():
-    print('===== Beginning main operation =====')
+    report(INFO, '===== Beginning main operation =====')
     # Initialization
 
     # Operation
@@ -487,7 +499,7 @@ if __name__ == '__main__':
         credentialsFound = credentialsFound and 'controller-addr' in config.keys()
         credentialsFound = credentialsFound and 'controller-traffic-port' in config.keys()
         if credentialsFound:
-            print('Credentials for controller found in config, connecting...')
+            report(INFO, 'Credentials for controller found in config, connecting...')
             credentials = [config['controller-ssid']]
             credentials.append(config['controller-ssid-password'])
             credentials.append(config['controller-addr'])
@@ -496,23 +508,23 @@ if __name__ == '__main__':
         
         # Attempt failed, enter discovery mode
         while not connected:
-            print('Unable to connect to controller')
+            report(INFO, 'Unable to connect to controller')
             controllerInfo = discoverController()
             connected = connectController(*controllerInfo)
-        print('Connected to controller, ready to send/recv packets')
+        report(INFO, 'Connected to controller, ready to send/recv packets')
 
         # All the normal stuff
         main()
 
     except BaseException as exception:
-        print('===== RailFi locomotive firmware has crashed =====')
+        report(INFO, '===== RailFi locomotive firmware has crashed =====')
         if bootMode == 'real':
             from uio import StringIO; strIO = StringIO()
             sys.print_exception(exception, strIO)
             tb = strIO.getvalue()
             with open('traceback.log', 'a') as tbFile:
                 tbFile.write(tb)
-                print('Traceback saved to traceback.log')
+                report(INFO, 'Traceback saved to traceback.log')
         else:
             from traceback import format_exc; tb = format_exc()
-        print(tb, end='')
+        report(INFO, tb, end='')

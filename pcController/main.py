@@ -171,6 +171,8 @@ class mainWindow(QWidget):
 
         self.locos = []     # Contains instances of loco
         self.selectedLoco = None
+        self.throttleUpdatedTime = time.perf_counter()
+        self.throttleUpdateInterval = 1 / 5
 
     def closeEvent(self, event):
         self.runFlag = False
@@ -185,7 +187,7 @@ class mainWindow(QWidget):
 
         try:
             conn, addr = dedicatedSocket.accept()
-            conn.settimeout(0.2)
+            conn.settimeout(5.0)
             self.locos.append(locomotive(str(addr), conn))
             self.locosList.addItem(self.locos[-1].name)
         except OSError:
@@ -265,7 +267,9 @@ class mainWindow(QWidget):
     def setThrottle(self, value):
         if self.selectedLoco is None: return
         print('===== setThrottle =====')
-        self.selectedLoco.throttle = round(value * 1.01) * (1 if self.selectedLoco.throttle >= 0 else -1)
+        if time.perf_counter() - self.throttleUpdatedTime > self.throttleUpdateInterval:
+            self.selectedLoco.throttle = round(value * 1.01) * (1 if self.selectedLoco.throttle >= 0 else -1)
+            self.throttleUpdatedTime = time.perf_counter()
         self._setThrottle()
 
     def reverse(self):
